@@ -434,7 +434,7 @@ def run_streamlit_app():
                 selected_outliers = st.multiselect(
                     "Outliers para comparar (máx 6)",
                     options=outliers_list,
-                    default=outliers_list[:min(3, len(outliers_list))],
+                    default=outliers_list[:min(6, len(outliers_list))],
                     max_selections=6,
                     key="outliers_select"
                 )
@@ -449,7 +449,7 @@ def run_streamlit_app():
                 selected_normals = st.multiselect(
                     "Normais para comparar (máx 6)",
                     options=normals_list,
-                    default=normals_list[:min(3, len(normals_list))],
+                    default=normals_list[:min(6, len(normals_list))],
                     max_selections=6,
                     key="normals_select"
                 )
@@ -621,3 +621,4 @@ if __name__ == "__main__":
         print("1. Instale o Streamlit: pip install streamlit")
         print("2. Execute: streamlit run oneclasssvm_app.py")
         print("=" * 60)
+
