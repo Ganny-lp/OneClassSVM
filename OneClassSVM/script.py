@@ -218,6 +218,68 @@ def generate_report_md(results_df, pivot_table, years, out_file):
 
 
 # ---------------------------
+# Função principal com cache
+# ---------------------------
+
+@st.cache_data
+def compute_results(_excel_path, _sheet_name, _contamination, _n_jobs):
+    """
+    Função principal que calcula os resultados e armazena em cache.
+    O underscore nos parâmetros é uma convenção do Streamlit para indicar que não são widgets.
+    """
+    try:
+        # Carregar e pré-processar dados
+        df_clean, grouped, pivot_table, years = load_and_preprocess(_excel_path, _sheet_name)
+        
+        # Escalar dados
+        X = pivot_table.values
+        X_scaled, scaler = scale_data(X)
+        
+        # Definir grade de parâmetros
+        nu_values = np.linspace(0.01, 0.3, 10)
+        gamma_values = np.logspace(-3, 0, 8)
+        param_grid = list(ParameterGrid({"nu": nu_values, "gamma": gamma_values}))
+        
+        # Buscar melhores parâmetros
+        best, results_sorted = grid_search_params(
+            X_scaled, 
+            param_grid, 
+            target_contamination=_contamination,
+            n_jobs=int(_n_jobs)
+        )
+        
+        # Usar o melhor modelo para previsões finais
+        best_model = best['model']
+        preds = best_model.predict(X_scaled)
+        label_map = np.where(preds == 1, "Normal", "Outlier")
+        pivot_table_result = pivot_table.copy()
+        pivot_table_result['Is_Outlier'] = label_map
+        
+        # Criar DataFrame de resultados
+        resultados_df = pivot_table_result.reset_index()
+        resultados_df = resultados_df.rename(columns={'Unidade Orçamentária': 'Unidade Orçamentária'})
+        
+        return {
+            'success': True,
+            'df_clean': df_clean,
+            'grouped': grouped,
+            'pivot_table': pivot_table,
+            'pivot_table_result': pivot_table_result,
+            'resultados_df': resultados_df,
+            'years': years,
+            'best_params': best,
+            'X_scaled': X_scaled
+        }
+        
+    except Exception as e:
+        logger.exception("Erro ao computar resultados")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+# ---------------------------
 # Streamlit App
 # ---------------------------
 
@@ -245,44 +307,27 @@ def run_streamlit_app():
         st.info("Ajuste parâmetros na barra lateral e clique em 'Rodar análise'.")
         return
 
-    try:
-        df_clean, grouped, pivot_table, years = load_and_preprocess(excel_path, sheet)
-    except Exception as e:
-        logger.exception("Erro ao carregar/pré-processar os dados")
-        st.error(f"Erro ao carregar/pré-processar: {e}")
+    # Calcular resultados (usando cache)
+    with st.spinner("Processando dados e ajustando modelo..."):
+        results = compute_results(excel_path, sheet, contamination, n_jobs)
+    
+    if not results['success']:
+        st.error(f"Erro ao processar dados: {results['error']}")
         return
-
+    
+    # Extrair resultados do cache
+    df_clean = results['df_clean']
+    grouped = results['grouped']
+    pivot_table = results['pivot_table']
+    pivot_table_result = results['pivot_table_result']
+    resultados_df = results['resultados_df']
+    years = results['years']
+    best_params = results['best_params']
+    
     st.success("Dados carregados e pré-processados.")
     st.write("Dimensão pivot (universidade x anos):", pivot_table.shape)
-
-    # Scale
-    X = pivot_table.values
-    X_scaled, scaler = scale_data(X)
-
-    # Definir grade de parâmetros para busca do OneClassSVM
-    # nu: fração estimada de outliers detectáveis -> [0.01, 0.5]
-    # gamma: 'scale' ou grid numérico; aqui usamos grid numérico adaptado à variação dos dados
-    nu_values = np.linspace(0.01, 0.3, 10)  # 10 valores
-    # heurística para gamma: usar gama baseada na variância dos dados escalados
-    gamma_values = np.logspace(-3, 0, 8)  # 8 valores
-    param_grid = list(ParameterGrid({"nu": nu_values, "gamma": gamma_values}))
-
-    st.info(f"Iniciando busca de hiperparâmetros ({len(param_grid)} candidatos) — isso pode levar alguns segundos.")
-    logger.info("Launching grid search (parallel)")
-
-    best, results_sorted = grid_search_params(X_scaled, param_grid, target_contamination=contamination,
-                                              n_jobs=int(n_jobs))
-
-    # Usar o melhor modelo para previsões finais
-    best_model = best['model']
-    preds = best_model.predict(X_scaled)  # 1 normal, -1 outlier
-    label_map = np.where(preds == 1, "Normal", "Outlier")
-    pivot_table_result = pivot_table.copy()
-    pivot_table_result['Is_Outlier'] = label_map
-
+    
     # Salvar resultados
-    resultados_df = pivot_table_result.reset_index()
-    resultados_df = resultados_df.rename(columns={'Unidade Orçamentária': 'Unidade Orçamentária'})
     csv_out = os.path.join(OUT_DIR, "resultados_oneclasssvm_universidades.csv")
     resultados_df.to_csv(csv_out, index=False, encoding='utf-8-sig')
     logger.info(f"Resultados salvos em {csv_out}")
@@ -374,69 +419,89 @@ def run_streamlit_app():
 
     # Segundo gráfico: Comparação lado a lado
     st.markdown("### 2. Comparação Individual: Seleção de Universidades")
+    st.markdown("*Agora você pode selecionar até 6 universidades de cada tipo para comparação.*")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Selecionar Outliers**")
-        outliers_list = resultados_df[resultados_df['Is_Outlier'] == "Outlier"]['Unidade Orçamentária'].tolist()
-        selected_outliers = st.multiselect(
-            "Outliers para comparar (máx 6)",
-            options=outliers_list,
-            default=outliers_list[:3] if len(outliers_list) >= 3 else outliers_list,
-            max_selections=6,
-            key="outliers_select"
-        )
-
-    with col2:
-        st.markdown("**Selecionar Normais**")
-        normals_list = resultados_df[resultados_df['Is_Outlier'] == "Normal"]['Unidade Orçamentária'].tolist()
-        selected_normals = st.multiselect(
-            "Normais para comparar (máx 6)",
-            options=normals_list,
-            default=normals_list[:3] if len(normals_list) >= 3 else normals_list,
-            max_selections=6,
-            key="normals_select"
-        )
-
-    # Gráfico de comparação
-    selected_all = selected_outliers + selected_normals
-    if selected_all:
-        comparison_data = []
-        for uni in selected_all:
-            row = resultados_df[resultados_df['Unidade Orçamentária'] == uni]
-            if not row.empty:
-                for year in years:
-                    comparison_data.append({
-                        "Universidade": uni,
-                        "Ano": year,
-                        "Investimento_por_Aluno": row[years].iloc[0][year],
-                        "Classificacao": row['Is_Outlier'].iloc[0],
-                        "Tipo_Exibicao": f"{uni} ({row['Is_Outlier'].iloc[0]})"
-                    })
-
-        comparison_df = pd.DataFrame(comparison_data)
-
-        # Criar gráfico com cores por classificação e estilo por universidade
-        fig_comparison = px.line(comparison_df, x='Ano', y='Investimento_por_Aluno',
-                                 color='Classificacao',
-                                 line_dash='Universidade',
-                                 markers=True,
-                                 title='Comparação Direta: Evolução de Universidades Selecionadas',
-                                 labels={'Investimento_por_Aluno': 'Investimento/Aluno (R$)',
-                                         'Classificacao': 'Classificação'},
-                                 hover_name='Tipo_Exibicao')
-
-        st.plotly_chart(fig_comparison, use_container_width=True)
-
-        # Tabela de dados
-        with st.expander("📊 Ver dados da comparação"):
-            pivot_comparison = comparison_df.pivot_table(
-                index=['Universidade', 'Classificacao'],
-                columns='Ano',
-                values='Investimento_por_Aluno'
-            ).reset_index()
-            st.dataframe(pivot_comparison, use_container_width=True)
+    # Verificar se temos dados
+    if resultados_df is None or len(resultados_df) == 0:
+        st.warning("Nenhum resultado disponível.")
+    else:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Selecionar Outliers**")
+            outliers_list = resultados_df[resultados_df['Is_Outlier'] == "Outlier"]['Unidade Orçamentária'].tolist()
+            if outliers_list:
+                selected_outliers = st.multiselect(
+                    "Outliers para comparar (máx 6)",
+                    options=outliers_list,
+                    default=outliers_list[:min(3, len(outliers_list))],
+                    max_selections=6,
+                    key="outliers_select"
+                )
+            else:
+                st.info("Nenhum outlier detectado")
+                selected_outliers = []
+        
+        with col2:
+            st.markdown("**Selecionar Normais**")
+            normals_list = resultados_df[resultados_df['Is_Outlier'] == "Normal"]['Unidade Orçamentária'].tolist()
+            if normals_list:
+                selected_normals = st.multiselect(
+                    "Normais para comparar (máx 6)",
+                    options=normals_list,
+                    default=normals_list[:min(3, len(normals_list))],
+                    max_selections=6,
+                    key="normals_select"
+                )
+            else:
+                st.info("Nenhuma universidade normal detectada")
+                selected_normals = []
+        
+        # Gráfico de comparação - COM VERIFICAÇÃO ROBUSTA
+        selected_all = selected_outliers + selected_normals
+        
+        if selected_all:
+            comparison_data = []
+            for uni in selected_all:
+                row = resultados_df[resultados_df['Unidade Orçamentária'] == uni]
+                if not row.empty:
+                    for year in years:
+                        valor = row[years].iloc[0][year]
+                        comparison_data.append({
+                            "Universidade": uni,
+                            "Ano": year,
+                            "Investimento_por_Aluno": valor,
+                            "Classificacao": row['Is_Outlier'].iloc[0],
+                            "Tipo_Exibicao": f"{uni} ({row['Is_Outlier'].iloc[0]})"
+                        })
+            
+            if comparison_data:
+                comparison_df = pd.DataFrame(comparison_data)
+                
+                # Criar gráfico com cores por classificação e estilo por universidade
+                fig_comparison = px.line(comparison_df, x='Ano', y='Investimento_por_Aluno',
+                                         color='Classificacao',
+                                         line_dash='Universidade',
+                                         markers=True,
+                                         title='Comparação Direta: Evolução de Universidades Selecionadas',
+                                         labels={'Investimento_por_Aluno': 'Investimento/Aluno (R$)',
+                                                 'Classificacao': 'Classificação'},
+                                         hover_name='Tipo_Exibicao')
+                
+                st.plotly_chart(fig_comparison, use_container_width=True)
+                
+                # Tabela de dados
+                with st.expander("📊 Ver dados da comparação"):
+                    pivot_comparison = comparison_df.pivot_table(
+                        index=['Universidade', 'Classificacao'],
+                        columns='Ano',
+                        values='Investimento_por_Aluno'
+                    ).reset_index()
+                    st.dataframe(pivot_comparison, use_container_width=True)
+            else:
+                st.info("Selecione universidades válidas para visualizar a comparação.")
+        else:
+            st.info("Selecione pelo menos uma universidade para visualizar a comparação.")
 
     # Terceiro gráfico: Todos os outliers juntos
     st.markdown("### 3. Perfil Temporal de Todos os Outliers")
@@ -483,6 +548,8 @@ def run_streamlit_app():
 
         patterns_df = pd.DataFrame(outlier_patterns)
         st.dataframe(patterns_df.sort_values('Valor_Pico', ascending=False), use_container_width=True)
+    else:
+        st.info("Nenhum outlier detectado com os parâmetros selecionados.")
 
     # -----------------------------------------------------------
     # HEATMAP E OUTRAS VISUALIZAÇÕES (mantidas do código original)
@@ -529,6 +596,14 @@ def run_streamlit_app():
     except Exception as e:
         logger.warning(f"Could not save static figure (kaleido may be missing): {e}")
 
+    # Mostrar parâmetros do melhor modelo
+    with st.expander("📊 Ver detalhes técnicos do modelo"):
+        st.write(f"**Melhores parâmetros encontrados:**")
+        st.write(f"- nu: {best_params['nu']}")
+        st.write(f"- gamma: {best_params['gamma']}")
+        st.write(f"- Taxa de outliers: {best_params['outlier_rate']:.2%}")
+        st.write(f"- Score (diferença da contaminação alvo): {best_params['score']:.4f}")
+
     st.success("Análise concluída. Consulte logs em `logs/oneclasssvm.log` para detalhes.")
 
 
@@ -545,5 +620,4 @@ if __name__ == "__main__":
         print("Para rodar esta aplicação:")
         print("1. Instale o Streamlit: pip install streamlit")
         print("2. Execute: streamlit run oneclasssvm_app.py")
-
         print("=" * 60)
