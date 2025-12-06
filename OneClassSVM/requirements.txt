@@ -8,4 +8,3 @@ streamlit
 openpyxl
 tabulate
 matplotlib
-matplotlib.pyplot
