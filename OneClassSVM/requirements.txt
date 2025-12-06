@@ -8,3 +8,5 @@ streamlit
 openpyxl
 tabulate
 matplotlib
+seaborn
+
