@@ -381,10 +381,10 @@ def run_streamlit_app():
         st.markdown("**Selecionar Outliers**")
         outliers_list = resultados_df[resultados_df['Is_Outlier'] == "Outlier"]['Unidade Orçamentária'].tolist()
         selected_outliers = st.multiselect(
-            "Outliers para comparar (máx 5)",
+            "Outliers para comparar (máx 6)",
             options=outliers_list,
             default=outliers_list[:3] if len(outliers_list) >= 3 else outliers_list,
-            max_selections=5,
+            max_selections=6,
             key="outliers_select"
         )
 
@@ -392,10 +392,10 @@ def run_streamlit_app():
         st.markdown("**Selecionar Normais**")
         normals_list = resultados_df[resultados_df['Is_Outlier'] == "Normal"]['Unidade Orçamentária'].tolist()
         selected_normals = st.multiselect(
-            "Normais para comparar (máx 5)",
+            "Normais para comparar (máx 6)",
             options=normals_list,
             default=normals_list[:3] if len(normals_list) >= 3 else normals_list,
-            max_selections=5,
+            max_selections=6,
             key="normals_select"
         )
 
@@ -545,4 +545,5 @@ if __name__ == "__main__":
         print("Para rodar esta aplicação:")
         print("1. Instale o Streamlit: pip install streamlit")
         print("2. Execute: streamlit run oneclasssvm_app.py")
+
         print("=" * 60)
